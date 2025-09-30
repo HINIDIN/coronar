@@ -51,38 +51,63 @@ def parse_coronary_report(text):
     
     lines = [line.strip() for line in text.split('\n') if line.strip()]
     findings = []
+    processed_arteries = set()
 
     for line in lines:
-        artery_full = find_artery_in_line(line)
-        if not artery_full:
+        line_lower = line.lower()
+        
+        # Найти все артерии в строке
+        found_arteries = []
+        line_clean = re.sub(r'[^\w\s]', ' ', line_lower)
+        
+        # Сначала сокращения (в порядке убывания длины)
+        for abbr in sorted(ABBREVIATIONS.keys(), key=len, reverse=True):
+            if re.search(r'\b' + re.escape(abbr) + r'\b', line_clean):
+                full = ABBREVIATIONS[abbr]
+                if full not in found_arteries:
+                    found_arteries.append(full)
+        
+        # Потом полные названия
+        for full in ARTERIES.keys():
+            if full.lower() in line_clean and full not in found_arteries:
+                found_arteries.append(full)
+
+        if not found_arteries:
             continue
 
-        if artery_full not in ARTERIES:
-            continue
+        # Найти все проценты в строке
+        percents = [int(x) for x in re.findall(r'(\d+)%', line)]
+        has_occlusion = 'окклюзия' in line_lower
 
-        genitive = ARTERIES[artery_full]
+        # Сопоставление: если 1 артерия — 1 %, если 2 — 2 % и т.д.
+        for i, artery in enumerate(found_arteries):
+            if artery in processed_arteries:
+                continue
+            processed_arteries.add(artery)
 
-        # Анализируем строку
-        occlusion = bool(re.search(r'окклюзия', line, re.IGNORECASE))
-        stenosis_match = re.search(r'(\d+)%', line)
-        percent = int(stenosis_match.group(1)) if stenosis_match else None
+            genitive = ARTERIES[artery]
+            percent = percents[i] if i < len(percents) else None
+            is_occlusion = has_occlusion and (i == found_arteries.index(artery))  # упрощённо
 
-        has_stent = bool(re.search(r'стент', line, re.IGNORECASE))
-        no_restenosis = bool(re.search(r'без\s+рестеноза', line, re.IGNORECASE))
-        has_restenosis = bool(re.search(r'рестеноз', line, re.IGNORECASE)) and not no_restenosis
+            # Более точное: если в строке есть "окклюзия" и артерия — считаем окклюзией
+            real_occlusion = has_occlusion
 
-        findings.append({
-            'artery': artery_full,
-            'genitive': genitive,
-            'occlusion': occlusion,
-            'percent': percent,
-            'has_stent': has_stent,
-            'no_restenosis': no_restenosis,
-            'has_restenosis': has_restenosis,
-            'raw_line': line
-        })
+            has_stent = bool(re.search(r'стент', line, re.IGNORECASE))
+            no_restenosis = bool(re.search(r'без\s+рестеноза', line, re.IGNORECASE))
+            has_restenosis = bool(re.search(r'рестеноз', line, re.IGNORECASE)) and not no_restenosis
 
-    # Определяем тип диагноза
+            findings.append({
+                'artery': artery,
+                'genitive': genitive,
+                'occlusion': real_occlusion,
+                'percent': percent,
+                'has_stent': has_stent,
+                'no_restenosis': no_restenosis,
+                'has_restenosis': has_restenosis,
+                'raw_line': line
+            })
+
+    # ... (далее — та же логика формирования диагноза, что и раньше)
     has_significant = any(
         f['occlusion'] or (f['percent'] is not None and f['percent'] >= 50)
         for f in findings
@@ -95,7 +120,6 @@ def parse_coronary_report(text):
     )
     has_stents = any(f['has_stent'] for f in findings)
 
-    # === Формирование диагноза ===
     if has_significant:
         parts = []
         for f in findings:
