@@ -1,7 +1,6 @@
 import streamlit as st
 import re
 
-# Полные названия → родительный падеж
 ARTERIES = {
     "передняя нисходящая артерия": "передней нисходящей артерии",
     "огибающая артерия": "огибающей артерии",
@@ -14,7 +13,6 @@ ARTERIES = {
     "промежуточная артерия": "промежуточной артерии",
 }
 
-# Сокращения → полное название
 ABBREVIATIONS = {
     "пна": "передняя нисходящая артерия",
     "оа": "огибающая артерия",
@@ -29,21 +27,17 @@ ABBREVIATIONS = {
     "па": "промежуточная артерия",
 }
 
-def find_artery_in_line(line):
-    line_lower = line.lower().strip()
-    # Убираем возможные двоеточия и лишние символы
-    line_clean = re.sub(r'[^\w\s]', ' ', line_lower)
-    
-    # Проверяем сокращения (в порядке длины, чтобы избежать пересечений)
-    for abbr in sorted(ABBREVIATIONS.keys(), key=len, reverse=True):
-        if re.search(r'\b' + re.escape(abbr) + r'\b', line_clean):
-            return ABBREVIATIONS[abbr]
-    
-    # Проверяем полные названия
-    for full in ARTERIES.keys():
-        if full.lower() in line_clean:
-            return full
-    return None
+def find_percent_near(text, keyword):
+    text_lower = text.lower()
+    keyword_lower = keyword.lower()
+    pos = text_lower.find(keyword_lower)
+    if pos == -1:
+        return None
+    start = max(0, pos - 30)
+    end = min(len(text), pos + 50)
+    window = text[start:end]
+    percents = re.findall(r'(\d+)%', window)
+    return int(percents[0]) if percents else None
 
 def parse_coronary_report(text):
     if not text.strip():
@@ -54,20 +48,17 @@ def parse_coronary_report(text):
     processed_arteries = set()
 
     for line in lines:
-        line_lower = line.lower()
-        
-        # Найти все артерии в строке
+        line_clean = re.sub(r'[^\w\s]', ' ', line.lower())
         found_arteries = []
-        line_clean = re.sub(r'[^\w\s]', ' ', line_lower)
-        
-        # Сначала сокращения (в порядке убывания длины)
+
+        # Поиск сокращений
         for abbr in sorted(ABBREVIATIONS.keys(), key=len, reverse=True):
             if re.search(r'\b' + re.escape(abbr) + r'\b', line_clean):
                 full = ABBREVIATIONS[abbr]
                 if full not in found_arteries:
                     found_arteries.append(full)
-        
-        # Потом полные названия
+
+        # Поиск полных названий
         for full in ARTERIES.keys():
             if full.lower() in line_clean and full not in found_arteries:
                 found_arteries.append(full)
@@ -75,22 +66,31 @@ def parse_coronary_report(text):
         if not found_arteries:
             continue
 
-        # Найти все проценты в строке
-        percents = [int(x) for x in re.findall(r'(\d+)%', line)]
-        has_occlusion = 'окклюзия' in line_lower
-
-        # Сопоставление: если 1 артерия — 1 %, если 2 — 2 % и т.д.
-        for i, artery in enumerate(found_arteries):
+        for artery in found_arteries:
             if artery in processed_arteries:
                 continue
             processed_arteries.add(artery)
 
             genitive = ARTERIES[artery]
-            percent = percents[i] if i < len(percents) else None
-            is_occlusion = has_occlusion and (i == found_arteries.index(artery))  # упрощённо
 
-            # Более точное: если в строке есть "окклюзия" и артерия — считаем окклюзией
-            real_occlusion = has_occlusion
+            # Проверка окклюзии рядом с артерией
+            occlusion = False
+            match = re.search(re.escape(artery), line, re.IGNORECASE)
+            if match:
+                ctx_start = max(0, match.start() - 30)
+                ctx_end = min(len(line), match.end() + 30)
+                context = line[ctx_start:ctx_end]
+                occlusion = 'окклюзия' in context.lower()
+            else:
+                occlusion = 'окклюзия' in line.lower()
+
+            # Процент
+            percent = find_percent_near(line, artery)
+            if percent is None:
+                for abbr, full in ABBREVIATIONS.items():
+                    if full == artery:
+                        percent = find_percent_near(line, abbr)
+                        break
 
             has_stent = bool(re.search(r'стент', line, re.IGNORECASE))
             no_restenosis = bool(re.search(r'без\s+рестеноза', line, re.IGNORECASE))
@@ -99,7 +99,7 @@ def parse_coronary_report(text):
             findings.append({
                 'artery': artery,
                 'genitive': genitive,
-                'occlusion': real_occlusion,
+                'occlusion': occlusion,
                 'percent': percent,
                 'has_stent': has_stent,
                 'no_restenosis': no_restenosis,
@@ -107,7 +107,7 @@ def parse_coronary_report(text):
                 'raw_line': line
             })
 
-    # ... (далее — та же логика формирования диагноза, что и раньше)
+    # Формирование диагноза
     has_significant = any(
         f['occlusion'] or (f['percent'] is not None and f['percent'] >= 50)
         for f in findings
